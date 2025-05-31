@@ -45,7 +45,7 @@
         seller: seller,
         amount: amount,
         status: "pending",
-        created-at: block-height
+        created-at: (get-block-height)
       }
     )
     (var-set next-order-id (+ order-id u1))
@@ -81,7 +81,7 @@
       {
         disputed-by: tx-sender,
         reason: reason,
-        disputed-at: block-height
+        disputed-at: (get-block-height)
       }
     )
     (map-set orders
