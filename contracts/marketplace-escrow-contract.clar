@@ -8,6 +8,9 @@
 (define-constant err-invalid-amount (err u103))
 (define-constant err-already-exists (err u104))
 (define-constant err-invalid-status (err u105))
+(define-constant err-self-transaction (err u106))
+(define-constant err-empty-reason (err u107))
+(define-constant err-invalid-winner (err u108))
 
 (define-data-var next-order-id uint u1)
 
@@ -31,19 +34,32 @@
   }
 )
 
+;; Private function to validate order exists
+(define-private (validate-order-exists (order-id uint))
+  (is-some (map-get? orders { order-id: order-id }))
+)
+
+;; Private function to validate reason is not empty
+(define-private (validate-reason (reason (string-ascii 100)))
+  (> (len reason) u0)
+)
+
 (define-public (create-order (seller principal) (amount uint))
   (let
     (
       (order-id (var-get next-order-id))
+      (validated-seller seller)
+      (validated-amount amount)
     )
-    (asserts! (> amount u0) err-invalid-amount)
-    (try! (stx-transfer? amount tx-sender (as-contract tx-sender)))
+    (asserts! (> validated-amount u0) err-invalid-amount)
+    (asserts! (not (is-eq tx-sender validated-seller)) err-self-transaction)
+    (try! (stx-transfer? validated-amount tx-sender (as-contract tx-sender)))
     (map-set orders
       { order-id: order-id }
       {
         buyer: tx-sender,
-        seller: seller,
-        amount: amount,
+        seller: validated-seller,
+        amount: validated-amount,
         status: "pending",
         created-at: burn-block-height
       }
@@ -56,13 +72,15 @@
 (define-public (complete-order (order-id uint))
   (let
     (
-      (order (unwrap! (map-get? orders { order-id: order-id }) err-not-found))
+      (validated-order-id order-id)
+      (order (unwrap! (map-get? orders { order-id: validated-order-id }) err-not-found))
     )
+    (asserts! (validate-order-exists validated-order-id) err-not-found)
     (asserts! (is-eq tx-sender (get buyer order)) err-unauthorized)
     (asserts! (is-eq (get status order) "pending") err-invalid-status)
     (try! (as-contract (stx-transfer? (get amount order) tx-sender (get seller order))))
     (map-set orders
-      { order-id: order-id }
+      { order-id: validated-order-id }
       (merge order { status: "completed" })
     )
     (ok true)
@@ -72,20 +90,24 @@
 (define-public (dispute-order (order-id uint) (reason (string-ascii 100)))
   (let
     (
-      (order (unwrap! (map-get? orders { order-id: order-id }) err-not-found))
+      (validated-order-id order-id)
+      (validated-reason reason)
+      (order (unwrap! (map-get? orders { order-id: validated-order-id }) err-not-found))
     )
+    (asserts! (validate-order-exists validated-order-id) err-not-found)
+    (asserts! (validate-reason validated-reason) err-empty-reason)
     (asserts! (or (is-eq tx-sender (get buyer order)) (is-eq tx-sender (get seller order))) err-unauthorized)
     (asserts! (is-eq (get status order) "pending") err-invalid-status)
     (map-set order-disputes
-      { order-id: order-id }
+      { order-id: validated-order-id }
       {
         disputed-by: tx-sender,
-        reason: reason,
+        reason: validated-reason,
         disputed-at: burn-block-height
       }
     )
     (map-set orders
-      { order-id: order-id }
+      { order-id: validated-order-id }
       (merge order { status: "disputed" })
     )
     (ok true)
@@ -95,13 +117,17 @@
 (define-public (resolve-dispute (order-id uint) (winner principal))
   (let
     (
-      (order (unwrap! (map-get? orders { order-id: order-id }) err-not-found))
+      (validated-order-id order-id)
+      (validated-winner winner)
+      (order (unwrap! (map-get? orders { order-id: validated-order-id }) err-not-found))
     )
+    (asserts! (validate-order-exists validated-order-id) err-not-found)
     (asserts! (is-eq tx-sender contract-owner) err-owner-only)
     (asserts! (is-eq (get status order) "disputed") err-invalid-status)
-    (try! (as-contract (stx-transfer? (get amount order) tx-sender winner)))
+    (asserts! (or (is-eq validated-winner (get buyer order)) (is-eq validated-winner (get seller order))) err-invalid-winner)
+    (try! (as-contract (stx-transfer? (get amount order) tx-sender validated-winner)))
     (map-set orders
-      { order-id: order-id }
+      { order-id: validated-order-id }
       (merge order { status: "resolved" })
     )
     (ok true)
